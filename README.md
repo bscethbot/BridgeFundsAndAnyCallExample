@@ -5,7 +5,7 @@ Environments setup:
 How to test?
 
 
-1. Enter prvkey for your TESTNET account
+1. Enter prvkey for your TESTNET account in env.example file and rename to .env
 2. Get some testnet matic at https://faucet.polygon.technology/
 3. Get some A1 token for testing by (This swaps your matic to our A1 token used for testing the router)
 "yarn hardhat run ./scripts/0swapMaticToA1token.js --network polygonmumbai"
