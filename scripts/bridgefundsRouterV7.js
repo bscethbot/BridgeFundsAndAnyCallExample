@@ -31,8 +31,11 @@ async function main() {
 
     const routerv7address=contractaddresses['routerv7'][chainid]
     const a1TokenAddress=contractaddresses['a1token'][chainid]
+    const a1TokenAddressDest=contractaddresses['a1token'][tochainid]
+
     const destinationExecContract=contractaddresses['execcontract'][tochainid]
     const destinationRouter=contractaddresses['routerv7'][tochainid]
+    const a2TokenAddressDest=contractaddresses['a2token'][tochainid]
     // console.log("the routerV7 address is "+routerv7address)
 
 
@@ -42,9 +45,9 @@ async function main() {
       routerv7address// The deployed contract address
 );
     const uintFarAway='16628028124120';
-    const swapPathA1toA2onMumbai=['0x651FCf3Cf2b52b632185b1175475aE07F320d008','0xA2f5Ab36a1dDd3d64CF07319a84Af8061d38bb9C']
-    const oneetherinwei=ethers.utils.parseEther('1')
-
+    const swapPathA1toA2onMumbai=[a1TokenAddressDest,a2TokenAddressDest]
+    // const oneetherinwei=ethers.utils.parseEther('1')
+    const onedecimal6=1000000
 //     const data = abiCoder.encode(["tuple(uint256,uint256,uint256,address[],address,uint256,bool)"],
 //     [[0, 0, amount, [tokenA, tokenB], receiver, eth.constant.MaxUint256, toNative]]);
 // console.log(`encode data:${data}`)
@@ -58,7 +61,7 @@ async function main() {
      const callargs=[a1TokenAddress,
       destinationExecContract,
 
-      oneetherinwei,
+      onedecimal6,
       tochainid,
       destinationExecContract,dataPassedToDest]
 

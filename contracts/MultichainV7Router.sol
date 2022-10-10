@@ -1,98 +1,348 @@
 /**
- *Submitted for verification at polygonscan.com on 2022-09-02
+ *Submitted for verification at BscScan.com on 2022-10-10
 */
 
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Sources flattened with hardhat v2.9.1 https://hardhat.org
+// Sources flattened with hardhat v2.11.2 https://hardhat.org
 
-// File @openzeppelin/contracts/token/ERC20/IERC20.sol@v4.5.0
+// File contracts/access/PausableControl.sol
 
-// OpenZeppelin Contracts (last updated v4.5.0) (token/ERC20/IERC20.sol)
+
+pragma solidity ^0.8.10;
+
+abstract contract PausableControl {
+    mapping(bytes32 => bool) private _pausedRoles;
+
+    bytes32 public constant PAUSE_ALL_ROLE = 0x00;
+
+    event Paused(bytes32 role);
+    event Unpaused(bytes32 role);
+
+    modifier whenNotPaused(bytes32 role) {
+        require(
+            !paused(role) && !paused(PAUSE_ALL_ROLE),
+            "PausableControl: paused"
+        );
+        _;
+    }
+
+    modifier whenPaused(bytes32 role) {
+        require(
+            paused(role) || paused(PAUSE_ALL_ROLE),
+            "PausableControl: not paused"
+        );
+        _;
+    }
+
+    function paused(bytes32 role) public view virtual returns (bool) {
+        return _pausedRoles[role];
+    }
+
+    function _pause(bytes32 role) internal virtual whenNotPaused(role) {
+        _pausedRoles[role] = true;
+        emit Paused(role);
+    }
+
+    function _unpause(bytes32 role) internal virtual whenPaused(role) {
+        _pausedRoles[role] = false;
+        emit Unpaused(role);
+    }
+}
+
+
+// File contracts/access/MPCManageable.sol
+
+
+pragma solidity ^0.8.10;
+
+abstract contract MPCManageable {
+    address public mpc;
+    address public pendingMPC;
+
+    uint256 public constant delay = 2 days;
+    uint256 public delayMPC;
+
+    modifier onlyMPC() {
+        require(msg.sender == mpc, "MPC: only mpc");
+        _;
+    }
+
+    event LogChangeMPC(
+        address indexed oldMPC,
+        address indexed newMPC,
+        uint256 effectiveTime
+    );
+    event LogApplyMPC(
+        address indexed oldMPC,
+        address indexed newMPC,
+        uint256 applyTime
+    );
+
+    constructor(address _mpc) {
+        require(_mpc != address(0), "MPC: mpc is the zero address");
+        mpc = _mpc;
+        emit LogChangeMPC(address(0), mpc, block.timestamp);
+    }
+
+    function changeMPC(address _mpc) external onlyMPC {
+        require(_mpc != address(0), "MPC: mpc is the zero address");
+        pendingMPC = _mpc;
+        delayMPC = block.timestamp + delay;
+        emit LogChangeMPC(mpc, pendingMPC, delayMPC);
+    }
+
+    // only the `pendingMPC` can `apply`
+    // except when `pendingMPC` is a contract, then `mpc` can also `apply`
+    // in case `pendingMPC` has no `apply` wrapper method and cannot `apply`
+    function applyMPC() external {
+        require(
+            msg.sender == pendingMPC ||
+                (msg.sender == mpc && address(pendingMPC).code.length > 0),
+            "MPC: only pending mpc"
+        );
+        require(
+            delayMPC > 0 && block.timestamp >= delayMPC,
+            "MPC: time before delayMPC"
+        );
+        emit LogApplyMPC(mpc, pendingMPC, block.timestamp);
+        mpc = pendingMPC;
+        pendingMPC = address(0);
+        delayMPC = 0;
+    }
+}
+
+
+// File contracts/access/MPCAdminControl.sol
+
+
+pragma solidity ^0.8.10;
+
+abstract contract MPCAdminControl is MPCManageable {
+    address public admin;
+
+    event ChangeAdmin(address indexed _old, address indexed _new);
+
+    constructor(address _admin, address _mpc) MPCManageable(_mpc) {
+        admin = _admin;
+        emit ChangeAdmin(address(0), _admin);
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "MPCAdminControl: not admin");
+        _;
+    }
+
+    function changeAdmin(address _admin) external onlyMPC {
+        emit ChangeAdmin(admin, _admin);
+        admin = _admin;
+    }
+}
+
+
+// File contracts/access/MPCAdminPausableControl.sol
+
+
+pragma solidity ^0.8.10;
+
+
+abstract contract MPCAdminPausableControl is MPCAdminControl, PausableControl {
+    constructor(address _admin, address _mpc) MPCAdminControl(_admin, _mpc) {}
+
+    function pause(bytes32 role) external onlyAdmin {
+        _pause(role);
+    }
+
+    function unpause(bytes32 role) external onlyAdmin {
+        _unpause(role);
+    }
+}
+
+
+// File contracts/router/interfaces/IAnycallExecutor.sol
+
+pragma solidity ^0.8.6;
+
+/// IAnycallExecutor interface of the anycall executor
+/// Note: `_receiver` is the `fallback receive address` when exec failed.
+interface IAnycallExecutor {
+    function execute(
+        address _anycallProxy,
+        address _token,
+        address _receiver,
+        uint256 _amount,
+        bytes calldata _data
+    ) external returns (bool success, bytes memory result);
+}
+
+
+// File contracts/router/interfaces/SwapInfo.sol
+
+pragma solidity ^0.8.6;
+
+struct SwapInfo {
+    bytes32 swapoutID;
+    address token;
+    address receiver;
+    uint256 amount;
+    uint256 fromChainID;
+}
+
+
+// File contracts/router/interfaces/IRouterSecurity.sol
+
+pragma solidity ^0.8.10;
+
+interface IRouterSecurity {
+    function registerSwapin(string calldata swapID, SwapInfo calldata swapInfo)
+        external;
+
+    function registerSwapout(
+        address token,
+        address from,
+        string calldata to,
+        uint256 amount,
+        uint256 toChainID,
+        string calldata anycallProxy,
+        bytes calldata data
+    ) external returns (bytes32 swapoutID);
+
+    function isSwapCompleted(
+        string calldata swapID,
+        bytes32 swapoutID,
+        uint256 fromChainID
+    ) external view returns (bool);
+}
+
+
+// File contracts/router/interfaces/IRetrySwapinAndExec.sol
+
+pragma solidity ^0.8.10;
+
+interface IRetrySwapinAndExec {
+    function retrySwapinAndExec(
+        string calldata swapID,
+        SwapInfo calldata swapInfo,
+        address anycallProxy,
+        bytes calldata data,
+        bool dontExec
+    ) external;
+}
+
+
+// File contracts/router/interfaces/IUnderlying.sol
+
+
+pragma solidity ^0.8.10;
+
+interface IUnderlying {
+    function underlying() external view returns (address);
+
+    function deposit(uint256 amount, address to) external returns (uint256);
+
+    function withdraw(uint256 amount, address to) external returns (uint256);
+}
+
+
+// File contracts/router/interfaces/IAnyswapERC20Auth.sol
+
+pragma solidity ^0.8.10;
+
+interface IAnyswapERC20Auth {
+    function changeVault(address newVault) external returns (bool);
+}
+
+
+// File contracts/router/interfaces/IwNATIVE.sol
+
+pragma solidity ^0.8.10;
+
+interface IwNATIVE {
+    function deposit() external payable;
+
+    function withdraw(uint256) external;
+}
+
+
+// File contracts/router/interfaces/IRouterMintBurn.sol
+
+pragma solidity ^0.8.10;
+
+interface IRouterMintBurn {
+    function mint(address to, uint256 amount) external returns (bool);
+
+    function burn(address from, uint256 amount) external returns (bool);
+}
+
+
+// File @openzeppelin/contracts/security/ReentrancyGuard.sol@v4.7.3
+
+// OpenZeppelin Contracts v4.4.1 (security/ReentrancyGuard.sol)
 
 pragma solidity ^0.8.0;
 
 /**
- * @dev Interface of the ERC20 standard as defined in the EIP.
+ * @dev Contract module that helps prevent reentrant calls to a function.
+ *
+ * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
+ * available, which can be applied to functions to make sure there are no nested
+ * (reentrant) calls to them.
+ *
+ * Note that because there is a single `nonReentrant` guard, functions marked as
+ * `nonReentrant` may not call one another. This can be worked around by making
+ * those functions `private`, and then adding `external` `nonReentrant` entry
+ * points to them.
+ *
+ * TIP: If you would like to learn more about reentrancy and alternative ways
+ * to protect against it, check out our blog post
+ * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
  */
-interface IERC20 {
-    /**
-     * @dev Returns the amount of tokens in existence.
-     */
-    function totalSupply() external view returns (uint256);
+abstract contract ReentrancyGuard {
+    // Booleans are more expensive than uint256 or any type that takes up a full
+    // word because each write operation emits an extra SLOAD to first read the
+    // slot's contents, replace the bits taken up by the boolean, and then write
+    // back. This is the compiler's defense against contract upgrades and
+    // pointer aliasing, and it cannot be disabled.
+
+    // The values being non-zero value makes deployment a bit more expensive,
+    // but in exchange the refund on every call to nonReentrant will be lower in
+    // amount. Since refunds are capped to a percentage of the total
+    // transaction's gas, it is best to keep them low in cases like this one, to
+    // increase the likelihood of the full refund coming into effect.
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
 
     /**
-     * @dev Returns the amount of tokens owned by `account`.
+     * @dev Prevents a contract from calling itself, directly or indirectly.
+     * Calling a `nonReentrant` function from another `nonReentrant`
+     * function is not supported. It is possible to prevent this from happening
+     * by making the `nonReentrant` function external, and making it call a
+     * `private` function that does the actual work.
      */
-    function balanceOf(address account) external view returns (uint256);
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
 
-    /**
-     * @dev Moves `amount` tokens from the caller's account to `to`.
-     *
-     * Returns a boolean value indicating whether the operation succeeded.
-     *
-     * Emits a {Transfer} event.
-     */
-    function transfer(address to, uint256 amount) external returns (bool);
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
 
-    /**
-     * @dev Returns the remaining number of tokens that `spender` will be
-     * allowed to spend on behalf of `owner` through {transferFrom}. This is
-     * zero by default.
-     *
-     * This value changes when {approve} or {transferFrom} are called.
-     */
-    function allowance(address owner, address spender) external view returns (uint256);
+        _;
 
-    /**
-     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
-     *
-     * Returns a boolean value indicating whether the operation succeeded.
-     *
-     * IMPORTANT: Beware that changing an allowance with this method brings the risk
-     * that someone may use both the old and the new allowance by unfortunate
-     * transaction ordering. One possible solution to mitigate this race
-     * condition is to first reduce the spender's allowance to 0 and set the
-     * desired value afterwards:
-     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
-     *
-     * Emits an {Approval} event.
-     */
-    function approve(address spender, uint256 amount) external returns (bool);
-
-    /**
-     * @dev Moves `amount` tokens from `from` to `to` using the
-     * allowance mechanism. `amount` is then deducted from the caller's
-     * allowance.
-     *
-     * Returns a boolean value indicating whether the operation succeeded.
-     *
-     * Emits a {Transfer} event.
-     */
-    function transferFrom(
-        address from,
-        address to,
-        uint256 amount
-    ) external returns (bool);
-
-    /**
-     * @dev Emitted when `value` tokens are moved from one account (`from`) to
-     * another (`to`).
-     *
-     * Note that `value` may be zero.
-     */
-    event Transfer(address indexed from, address indexed to, uint256 value);
-
-    /**
-     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
-     * a call to {approve}. `value` is the new allowance.
-     */
-    event Approval(address indexed owner, address indexed spender, uint256 value);
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
 }
 
 
-// File @openzeppelin/contracts/utils/Address.sol@v4.5.0
+// File @openzeppelin/contracts/utils/Address.sol@v4.7.3
 
-// OpenZeppelin Contracts (last updated v4.5.0) (utils/Address.sol)
+// OpenZeppelin Contracts (last updated v4.7.0) (utils/Address.sol)
 
 pragma solidity ^0.8.1;
 
@@ -302,7 +552,7 @@ library Address {
             // Look for revert reason and bubble it up if present
             if (returndata.length > 0) {
                 // The easiest way to bubble the revert reason is using memory via assembly
-
+                /// @solidity memory-safe-assembly
                 assembly {
                     let returndata_size := mload(returndata)
                     revert(add(32, returndata), returndata_size)
@@ -315,11 +565,160 @@ library Address {
 }
 
 
-// File @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol@v4.5.0
+// File @openzeppelin/contracts/token/ERC20/IERC20.sol@v4.7.3
 
-// OpenZeppelin Contracts v4.4.1 (token/ERC20/utils/SafeERC20.sol)
+// OpenZeppelin Contracts (last updated v4.6.0) (token/ERC20/IERC20.sol)
 
 pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `to`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `from` to `to` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+}
+
+
+// File @openzeppelin/contracts/token/ERC20/extensions/draft-IERC20Permit.sol@v4.7.3
+
+// OpenZeppelin Contracts v4.4.1 (token/ERC20/extensions/draft-IERC20Permit.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 Permit extension allowing approvals to be made via signatures, as defined in
+ * https://eips.ethereum.org/EIPS/eip-2612[EIP-2612].
+ *
+ * Adds the {permit} method, which can be used to change an account's ERC20 allowance (see {IERC20-allowance}) by
+ * presenting a message signed by the account. By not relying on {IERC20-approve}, the token holder account doesn't
+ * need to send a transaction, and thus is not required to hold Ether at all.
+ */
+interface IERC20Permit {
+    /**
+     * @dev Sets `value` as the allowance of `spender` over ``owner``'s tokens,
+     * given ``owner``'s signed approval.
+     *
+     * IMPORTANT: The same issues {IERC20-approve} has related to transaction
+     * ordering also apply here.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `deadline` must be a timestamp in the future.
+     * - `v`, `r` and `s` must be a valid `secp256k1` signature from `owner`
+     * over the EIP712-formatted function arguments.
+     * - the signature must use ``owner``'s current nonce (see {nonces}).
+     *
+     * For more information on the signature format, see the
+     * https://eips.ethereum.org/EIPS/eip-2612#specification[relevant EIP
+     * section].
+     */
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    /**
+     * @dev Returns the current nonce for `owner`. This value must be
+     * included whenever a signature is generated for {permit}.
+     *
+     * Every successful call to {permit} increases ``owner``'s nonce by one. This
+     * prevents a signature from being used multiple times.
+     */
+    function nonces(address owner) external view returns (uint256);
+
+    /**
+     * @dev Returns the domain separator used in the encoding of the signature for {permit}, as defined by {EIP712}.
+     */
+    // solhint-disable-next-line func-name-mixedcase
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+}
+
+
+// File @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol@v4.7.3
+
+// OpenZeppelin Contracts (last updated v4.7.0) (token/ERC20/utils/SafeERC20.sol)
+
+pragma solidity ^0.8.0;
+
 
 
 /**
@@ -395,6 +794,22 @@ library SafeERC20 {
         }
     }
 
+    function safePermit(
+        IERC20Permit token,
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal {
+        uint256 nonceBefore = token.nonces(owner);
+        token.permit(owner, spender, value, deadline, v, r, s);
+        uint256 nonceAfter = token.nonces(owner);
+        require(nonceAfter == nonceBefore + 1, "SafeERC20: permit did not succeed");
+    }
+
     /**
      * @dev Imitates a Solidity high-level call (i.e. a regular function call to a contract), relaxing the requirement
      * on the return value: the return value is optional (but if data is returned, it must not be false).
@@ -415,338 +830,6 @@ library SafeERC20 {
 }
 
 
-// File @openzeppelin/contracts/security/ReentrancyGuard.sol@v4.5.0
-
-// OpenZeppelin Contracts v4.4.1 (security/ReentrancyGuard.sol)
-
-pragma solidity ^0.8.0;
-
-/**
- * @dev Contract module that helps prevent reentrant calls to a function.
- *
- * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier
- * available, which can be applied to functions to make sure there are no nested
- * (reentrant) calls to them.
- *
- * Note that because there is a single `nonReentrant` guard, functions marked as
- * `nonReentrant` may not call one another. This can be worked around by making
- * those functions `private`, and then adding `external` `nonReentrant` entry
- * points to them.
- *
- * TIP: If you would like to learn more about reentrancy and alternative ways
- * to protect against it, check out our blog post
- * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].
- */
-abstract contract ReentrancyGuard {
-    // Booleans are more expensive than uint256 or any type that takes up a full
-    // word because each write operation emits an extra SLOAD to first read the
-    // slot's contents, replace the bits taken up by the boolean, and then write
-    // back. This is the compiler's defense against contract upgrades and
-    // pointer aliasing, and it cannot be disabled.
-
-    // The values being non-zero value makes deployment a bit more expensive,
-    // but in exchange the refund on every call to nonReentrant will be lower in
-    // amount. Since refunds are capped to a percentage of the total
-    // transaction's gas, it is best to keep them low in cases like this one, to
-    // increase the likelihood of the full refund coming into effect.
-    uint256 private constant _NOT_ENTERED = 1;
-    uint256 private constant _ENTERED = 2;
-
-    uint256 private _status;
-
-    constructor() {
-        _status = _NOT_ENTERED;
-    }
-
-    /**
-     * @dev Prevents a contract from calling itself, directly or indirectly.
-     * Calling a `nonReentrant` function from another `nonReentrant`
-     * function is not supported. It is possible to prevent this from happening
-     * by making the `nonReentrant` function external, and making it call a
-     * `private` function that does the actual work.
-     */
-    modifier nonReentrant() {
-        // On the first call to nonReentrant, _notEntered will be true
-        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
-
-        // Any calls to nonReentrant after this point will fail
-        _status = _ENTERED;
-
-        _;
-
-        // By storing the original value once again, a refund is triggered (see
-        // https://eips.ethereum.org/EIPS/eip-2200)
-        _status = _NOT_ENTERED;
-    }
-}
-
-
-// File contracts/access/MPCManageable.sol
-
-
-pragma solidity ^0.8.10;
-
-abstract contract MPCManageable {
-    using Address for address;
-
-    address public mpc;
-    address public pendingMPC;
-
-    uint256 public constant delay = 2 days;
-    uint256 public delayMPC;
-
-    modifier onlyMPC() {
-        require(msg.sender == mpc, "MPC: only mpc");
-        _;
-    }
-
-    event LogChangeMPC(address indexed oldMPC, address indexed newMPC, uint256 effectiveTime);
-    event LogApplyMPC(address indexed oldMPC, address indexed newMPC, uint256 applyTime);
-
-    constructor(address _mpc) {
-        require(_mpc != address(0), "MPC: mpc is the zero address");
-        mpc = _mpc;
-        emit LogChangeMPC(address(0), mpc, block.timestamp);
-    }
-
-    function changeMPC(address _mpc) external onlyMPC {
-        require(_mpc != address(0), "MPC: mpc is the zero address");
-        pendingMPC = _mpc;
-        delayMPC = block.timestamp + delay;
-        emit LogChangeMPC(mpc, pendingMPC, delayMPC);
-    }
-
-    function applyMPC() external {
-        require(
-            msg.sender == pendingMPC ||
-            (msg.sender == mpc && address(pendingMPC).isContract()),
-            "MPC: only pending mpc"
-        );
-        require(delayMPC > 0 && block.timestamp >= delayMPC, "MPC: time before delayMPC");
-        emit LogApplyMPC(mpc, pendingMPC, block.timestamp);
-        mpc = pendingMPC;
-        pendingMPC = address(0);
-        delayMPC = 0;
-    }
-}
-
-
-// File contracts/access/PausableControl.sol
-
-
-pragma solidity ^0.8.10;
-
-abstract contract PausableControl {
-    mapping(bytes32 => bool) private _pausedRoles;
-
-    bytes32 public constant PAUSE_ALL_ROLE = 0x00;
-
-    event Paused(bytes32 role);
-    event Unpaused(bytes32 role);
-
-    modifier whenNotPaused(bytes32 role) {
-        require(
-            !paused(role) && !paused(PAUSE_ALL_ROLE),
-            "PausableControl: paused"
-        );
-        _;
-    }
-
-    modifier whenPaused(bytes32 role) {
-        require(
-            paused(role) || paused(PAUSE_ALL_ROLE),
-            "PausableControl: not paused"
-        );
-        _;
-    }
-
-    function paused(bytes32 role) public view virtual returns (bool) {
-        return _pausedRoles[role];
-    }
-
-    function _pause(bytes32 role) internal virtual whenNotPaused(role) {
-        _pausedRoles[role] = true;
-        emit Paused(role);
-    }
-
-    function _unpause(bytes32 role) internal virtual whenPaused(role) {
-        _pausedRoles[role] = false;
-        emit Unpaused(role);
-    }
-}
-
-
-// File contracts/access/AdminControl.sol
-
-
-pragma solidity ^0.8.10;
-
-abstract contract AdminControl {
-    address public admin;
-    address public pendingAdmin;
-
-    event ChangeAdmin(address indexed _old, address indexed _new);
-    event ApplyAdmin(address indexed _old, address indexed _new);
-
-    constructor(address _admin) {
-        require(_admin != address(0), "AdminControl: address(0)");
-        admin = _admin;
-    }
-
-    modifier onlyAdmin() {
-        require(msg.sender == admin, "AdminControl: not admin");
-        _;
-    }
-
-    function changeAdmin(address _admin) external onlyAdmin {
-        require(_admin != address(0), "AdminControl: address(0)");
-        pendingAdmin = _admin;
-        emit ChangeAdmin(admin, _admin);
-    }
-
-    function applyAdmin() external {
-        require(msg.sender == pendingAdmin, "AdminControl: Forbidden");
-        emit ApplyAdmin(admin, pendingAdmin);
-        admin = pendingAdmin;
-        pendingAdmin = address(0);
-    }
-}
-
-
-// File contracts/access/PausableControlWithAdmin.sol
-
-
-
-pragma solidity ^0.8.10;
-
-abstract contract PausableControlWithAdmin is PausableControl, AdminControl {
-    constructor(address _admin) AdminControl(_admin) {
-    }
-
-    function pause(bytes32 role) external onlyAdmin {
-        _pause(role);
-    }
-
-    function unpause(bytes32 role) external onlyAdmin {
-        _unpause(role);
-    }
-}
-
-
-// File contracts/router/interfaces/IAnycallExecutor.sol
-
-pragma solidity ^0.8.6;
-
-/// IAnycallExecutor interface of the anycall executor
-interface IAnycallExecutor {
-    function execute(
-        address _anycallProxy,
-        address _token,
-        uint256 _amount,
-        bytes calldata _data
-    ) external returns (bool success, bytes memory result);
-}
-
-
-// File contracts/router/interfaces/SwapInfo.sol
-
-pragma solidity ^0.8.6;
-
-struct SwapInfo {
-    bytes32 swapoutID;
-    address token;
-    address receiver;
-    uint256 amount;
-    uint256 fromChainID;
-}
-
-
-// File contracts/router/interfaces/IRouterSecurity.sol
-
-pragma solidity ^0.8.10;
-
-interface IRouterSecurity {
-    function registerSwapin(string calldata swapID, SwapInfo calldata swapInfo)
-        external;
-
-    function registerSwapout(
-        address token,
-        address from,
-        string calldata to,
-        uint256 amount,
-        uint256 toChainID,
-        string calldata anycallProxy,
-        bytes calldata data
-    ) external returns (bytes32 swapoutID);
-
-    function isSwapCompleted(
-        string calldata swapID,
-        bytes32 swapoutID,
-        uint256 fromChainID
-    ) external view returns (bool);
-}
-
-
-// File contracts/router/interfaces/IRetrySwapinAndExec.sol
-
-pragma solidity ^0.8.10;
-
-interface IRetrySwapinAndExec {
-    function retrySwapinAndExec(
-        string calldata swapID,
-        SwapInfo calldata swapInfo,
-        address anycallProxy,
-        bytes calldata data,
-        bool dontExec
-    ) external;
-}
-
-
-// File contracts/router/interfaces/IUnderlying.sol
-
-
-pragma solidity ^0.8.10;
-
-interface IUnderlying {
-    function underlying() external view returns (address);
-
-    function deposit(uint256 amount, address to) external returns (uint256);
-
-    function withdraw(uint256 amount, address to) external returns (uint256);
-}
-
-
-// File contracts/router/interfaces/IwNATIVE.sol
-
-pragma solidity ^0.8.10;
-
-interface IwNATIVE {
-    function deposit() external payable;
-
-    function withdraw(uint256) external;
-}
-
-
-// File contracts/router/interfaces/IAnyswapERC20Auth.sol
-
-pragma solidity ^0.8.10;
-
-interface IAnyswapERC20Auth {
-    function changeVault(address newVault) external returns (bool);
-}
-
-
-// File contracts/router/interfaces/IRouterMintBurn.sol
-
-pragma solidity ^0.8.10;
-
-interface IRouterMintBurn {
-    function mint(address to, uint256 amount) external returns (bool);
-
-    function burn(address from, uint256 amount) external returns (bool);
-}
-
-
 // File contracts/router/MultichainV7Router.sol
 
 
@@ -761,10 +844,8 @@ pragma solidity ^0.8.10;
 
 
 
-
 contract MultichainV7Router is
-    MPCManageable,
-    PausableControlWithAdmin,
+    MPCAdminPausableControl,
     ReentrancyGuard,
     IRetrySwapinAndExec
 {
@@ -777,6 +858,7 @@ contract MultichainV7Router is
         keccak256("Swapout_Paused_ROLE");
     bytes32 public constant Call_Paused_ROLE = keccak256("Call_Paused_ROLE");
     bytes32 public constant Exec_Paused_ROLE = keccak256("Exec_Paused_ROLE");
+    bytes32 public constant Retry_Paused_ROLE = keccak256("Retry_Paused_ROLE");
 
     address public immutable wNATIVE;
     address public immutable anycallExecutor;
@@ -789,7 +871,7 @@ contract MultichainV7Router is
     }
 
     mapping(address => ProxyInfo) public anycallProxyInfo;
-    mapping(bytes32 => bool) public retryRecords;
+    mapping(bytes32 => bytes32) public retryRecords; // retryHash -> dataHash
 
     event LogAnySwapIn(
         string swapID,
@@ -857,7 +939,7 @@ contract MultichainV7Router is
         address _wNATIVE,
         address _anycallExecutor,
         address _routerSecurity
-    ) MPCManageable(_mpc) PausableControlWithAdmin(_admin) {
+    ) MPCAdminPausableControl(_admin, _mpc) {
         require(_anycallExecutor != address(0), "zero anycall executor");
         anycallExecutor = _anycallExecutor;
         wNATIVE = _wNATIVE;
@@ -888,7 +970,7 @@ contract MultichainV7Router is
     function addAnycallProxies(
         address[] calldata proxies,
         bool[] calldata acceptAnyTokenFlags
-    ) external nonReentrant onlyMPC {
+    ) external nonReentrant onlyAdmin {
         uint256 length = proxies.length;
         require(length == acceptAnyTokenFlags.length, "length mismatch");
         for (uint256 i = 0; i < length; i++) {
@@ -902,7 +984,7 @@ contract MultichainV7Router is
     function removeAnycallProxies(address[] calldata proxies)
         external
         nonReentrant
-        onlyMPC
+        onlyAdmin
     {
         for (uint256 i = 0; i < proxies.length; i++) {
             delete anycallProxyInfo[proxies[i]];
@@ -929,7 +1011,8 @@ contract MultichainV7Router is
         emit LogAnySwapOut(swapoutID, token, msg.sender, to, amount, toChainID);
     }
 
-    // Swaps `amount` `token` from this chain to `toChainID` chain with recipient `to` and call anycall proxy with `data`
+    // Swaps `amount` `token` from this chain to `toChainID` chain and call anycall proxy with `data`
+    // `to` is the fallback receive address when exec failed on the `destination` chain
     function anySwapOutAndCall(
         address token,
         string calldata to,
@@ -1009,7 +1092,8 @@ contract MultichainV7Router is
         );
     }
 
-    // Swaps `amount` `token` from this chain to `toChainID` chain with recipient `to` by minting with `underlying` and call anycall proxy with `data`
+    // Swaps `amount` `token` from this chain to `toChainID` chain and call anycall proxy with `data`
+    // `to` is the fallback receive address when exec failed on the `destination` chain
     function anySwapOutUnderlyingAndCall(
         address token,
         string calldata to,
@@ -1087,7 +1171,8 @@ contract MultichainV7Router is
         );
     }
 
-    // Swaps `msg.value` `Native` from this chain to `toChainID` chain with recipient `to` and call anycall proxy with `data`
+    // Swaps `msg.value` `Native` from this chain to `toChainID` chain and call anycall proxy with `data`
+    // `to` is the fallback receive address when exec failed on the `destination` chain
     function anySwapOutNativeAndCall(
         address token,
         string calldata to,
@@ -1268,10 +1353,7 @@ contract MultichainV7Router is
         IRouterSecurity(routerSecurity).registerSwapin(swapID, swapInfo);
 
         assert(
-            IRouterMintBurn(swapInfo.token).mint(
-                swapInfo.receiver,
-                swapInfo.amount
-            )
+            IRouterMintBurn(swapInfo.token).mint(anycallProxy, swapInfo.amount)
         );
 
         bool success;
@@ -1280,6 +1362,7 @@ contract MultichainV7Router is
             IAnycallExecutor(anycallExecutor).execute(
                 anycallProxy,
                 swapInfo.token,
+                swapInfo.receiver,
                 swapInfo.amount,
                 data
             )
@@ -1339,13 +1422,13 @@ contract MultichainV7Router is
                 );
                 IUnderlying(swapInfo.token).withdraw(
                     swapInfo.amount,
-                    swapInfo.receiver
+                    anycallProxy
                 );
             } else if (anycallProxyInfo[anycallProxy].acceptAnyToken) {
                 receiveToken = swapInfo.token;
                 assert(
                     IRouterMintBurn(swapInfo.token).mint(
-                        swapInfo.receiver,
+                        anycallProxy,
                         swapInfo.amount
                     )
                 );
@@ -1362,7 +1445,7 @@ contract MultichainV7Router is
                         data
                     )
                 );
-                retryRecords[retryHash] = true;
+                retryRecords[retryHash] = keccak256(abi.encode(swapID, data));
                 emit LogRetryExecRecord(
                     swapID,
                     swapInfo.swapoutID,
@@ -1383,6 +1466,7 @@ contract MultichainV7Router is
             IAnycallExecutor(anycallExecutor).execute(
                 anycallProxy,
                 receiveToken,
+                swapInfo.receiver,
                 swapInfo.amount,
                 data
             )
@@ -1402,10 +1486,9 @@ contract MultichainV7Router is
         );
     }
 
-    // should be called only by the `receiver`
+    // should be called only by the `receiver` or `admin`
     // @param dontExec
     // if `true` transfer the underlying token to the `receiver`,
-    //      and the `receiver` should complete the left job.
     // if `false` retry swapin and execute in normal way.
     function retrySwapinAndExec(
         string calldata swapID,
@@ -1413,8 +1496,11 @@ contract MultichainV7Router is
         address anycallProxy,
         bytes calldata data,
         bool dontExec
-    ) external nonReentrant {
-        require(msg.sender == swapInfo.receiver, "forbid retry swap");
+    ) external whenNotPaused(Retry_Paused_ROLE) nonReentrant {
+        require(
+            msg.sender == swapInfo.receiver || msg.sender == admin,
+            "forbid retry swap"
+        );
         require(
             IRouterSecurity(routerSecurity).isSwapCompleted(
                 swapID,
@@ -1423,20 +1509,26 @@ contract MultichainV7Router is
             ),
             "swap not completed"
         );
-        bytes32 retryHash = keccak256(
-            abi.encode(
-                swapID,
-                swapInfo.swapoutID,
-                swapInfo.token,
-                swapInfo.receiver,
-                swapInfo.amount,
-                swapInfo.fromChainID,
-                anycallProxy,
-                data
-            )
-        );
-        require(retryRecords[retryHash], "retry record not exist");
-        retryRecords[retryHash] = false;
+
+        {
+            bytes32 retryHash = keccak256(
+                abi.encode(
+                    swapID,
+                    swapInfo.swapoutID,
+                    swapInfo.token,
+                    swapInfo.receiver,
+                    swapInfo.amount,
+                    swapInfo.fromChainID,
+                    anycallProxy,
+                    data
+                )
+            );
+            require(
+                retryRecords[retryHash] == keccak256(abi.encode(swapID, data)),
+                "retry record not exist"
+            );
+            delete retryRecords[retryHash];
+        }
 
         address _underlying = IUnderlying(swapInfo.token).underlying();
         require(_underlying != address(0), "MultichainRouter: zero underlying");
@@ -1447,19 +1539,22 @@ contract MultichainV7Router is
         assert(
             IRouterMintBurn(swapInfo.token).mint(address(this), swapInfo.amount)
         );
-        IUnderlying(swapInfo.token).withdraw(
-            swapInfo.amount,
-            swapInfo.receiver
-        );
 
         bool success;
         bytes memory result;
 
-        if (!dontExec) {
+        if (dontExec) {
+            IUnderlying(swapInfo.token).withdraw(
+                swapInfo.amount,
+                swapInfo.receiver
+            );
+        } else {
+            IUnderlying(swapInfo.token).withdraw(swapInfo.amount, anycallProxy);
             try
                 IAnycallExecutor(anycallExecutor).execute(
                     anycallProxy,
                     _underlying,
+                    swapInfo.receiver,
                     swapInfo.amount,
                     data
                 )

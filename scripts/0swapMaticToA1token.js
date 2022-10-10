@@ -24,10 +24,12 @@ async function swapMaticToA1token() {
     
     const sushiRouterContract = await ethers.getContractAt(abi, sushiRouter)
     // console.log(sushiRouterContract.interface)
-    const matictoA1path=[ "0x5b67676a984807a212b1c59ebfc9b3568a474f0a","0x53098a3656de0c1ee8dcf004e6a0e886b2968a2f" ]
-    const neededMatic=await sushiRouterContract.getAmountsIn('5000000000000000000',matictoA1path)
+    const matictoA1path=[ "0x5b67676a984807a212b1c59ebfc9b3568a474f0a","0x8CD309e14575203535EF120b5b0Ab4DDeD0C2073" ]
+    
+    //Get 5 test tokens, its decimal 6
+    const neededMatic=await sushiRouterContract.getAmountsIn('5000000',matictoA1path)
     // console.log(neededMatic)
-    const swaptx=await sushiRouterContract.swapExactETHForTokens('0',matictoA1path,testnetdeployer,'166311560900', { value: neededMatic[0]})
+    const swaptx=await sushiRouterContract.swapExactETHForTokens('0',matictoA1path,testnetdeployer,'166311560900000', { value: neededMatic[0]})
     console.log('swap tx transaction sent')
     console.log(swaptx.hash)
     await swaptx.wait(2)
